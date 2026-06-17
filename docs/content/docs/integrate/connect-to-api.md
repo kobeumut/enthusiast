@@ -14,9 +14,7 @@ Once you have the API token for a service account, you can connect to Enthusiast
 2. In Swagger UI, click Authorize in the top-right corner.
 3. Enter `Token <API_TOKEN>` in the authorization field and click **Authorize**.
 
-:::success
 You can now interact with the API. Let’s query some data.
-:::
 
 ## Navigating the Endpoints
 
@@ -53,9 +51,9 @@ To authenticate with Enthusiast's API using `curl` from the terminal, include th
         }'
     ```
 
-:::info
-Replace `<API_TOKEN>` with your actual API token and `<PATH>>` with the specific API endpoint.
-:::
+> [!NOTE]
+>
+> Replace `<API_TOKEN>` with your actual API token and `<PATH>>` with the specific API endpoint.
 
 Example `curl` command:
 
