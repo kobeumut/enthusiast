@@ -106,6 +106,24 @@ docker compose exec api python manage.py reindex --data-set <id> --products
 docker compose exec api python manage.py reindex --data-set <id> --documents
 ```
 
+The backfill is **resilient**: a single bad item (embedding API error, oversize chunk, transient network failure) never aborts the whole run. Each item is retried with exponential backoff, and on terminal failure the error is recorded while the run continues. At the end the command prints a summary like `Reindex summary: 198 ok / 2 fail` followed by the list of failed items (product `entry_id` / document `url` and their primary key) so you can investigate or re-run just those.
+
+```bash
+# Stop on the first terminal failure instead of continuing (CI / debugging).
+# The command exits non-zero when it aborts.
+docker compose exec api python manage.py reindex --data-set <id> --fail-fast
+
+# Tune retry behaviour. --max-attempts is the total tries per item (first attempt
+# counts), --retry-backoff is the base seconds for exponential backoff.
+docker compose exec api python manage.py reindex --data-set <id> --max-attempts 3 --retry-backoff 1.0
+
+# Resume a large backfill in batches. Items are processed in primary-key order
+# when either option is set, so --from-id continues exactly where a batch stopped.
+docker compose exec api python manage.py reindex --data-set <id> --from-id <pk> --limit 1000
+```
+
+Per-item progress is verbose and only printed at `-v 2` and above (`python manage.py reindex -v 2 ...`); the default output stays limited to headings, per-type totals, and the final summary.
+
 **Celery tasks (async, on the worker).** Re-dispatch per-item indexing for a whole data set:
 
 ```python
