@@ -72,8 +72,12 @@ class DjangoUserRepository(
 class DjangoDocumentChunkRepository(BaseDjangoRepository[DocumentChunk], BaseModelChunkRepository[DocumentChunk]):
     def get_chunk_by_distance_for_data_set(self, data_set_id: int, distance: CosineDistance) -> QuerySet[DocumentChunk]:
         embeddings_by_distance = self.model.objects.annotate(distance=distance).order_by("distance")
+        # Skip chunks whose embedding failed to generate (``embedding IS NULL``). A cosine distance
+        # computed against NULL is NULL, so without this guard stale/partial chunks could occupy
+        # result slots or be returned by the document retriever even though they carry no vector.
         embeddings_with_documents = embeddings_by_distance.select_related("document").filter(
-            document__data_set_id__exact=data_set_id
+            document__data_set_id__exact=data_set_id,
+            embedding__isnull=False,
         )
         return embeddings_with_documents
 
@@ -85,8 +89,11 @@ class DjangoProductChunkRepository(
         self, data_set_id: int, distance: CosineDistance
     ) -> QuerySet[ProductContentChunk]:
         embeddings_by_distance = self.model.objects.annotate(distance=distance).order_by("distance")
+        # Skip chunks whose embedding failed to generate (``embedding IS NULL``) — see
+        # DjangoDocumentChunkRepository for rationale.
         embeddings_with_products = embeddings_by_distance.select_related("product").filter(
-            product__data_set_id__exact=data_set_id
+            product__data_set_id__exact=data_set_id,
+            embedding__isnull=False,
         )
         return embeddings_with_products
 
@@ -101,7 +108,8 @@ class DjangoProductChunkRepository(
             .order_by("distance")
         )
         embeddings_with_products = embeddings_by_distance_and_keyword.select_related("product").filter(
-            product__data_set_id__exact=data_set_id
+            product__data_set_id__exact=data_set_id,
+            embedding__isnull=False,
         )
         return embeddings_with_products
 

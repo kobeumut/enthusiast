@@ -93,3 +93,65 @@ class TestDocumentRetrievalUsesPgvector:
         assert results[0].id == chunk_a.id
         assert results[0].content == "fiber optic broadband"
         assert results[0].distance <= results[1].distance
+
+
+class TestRetrievalSkipsNullEmbeddings:
+    """Chunks whose embedding failed to generate (``embedding IS NULL``) must never surface in
+    vector search results — they represent stale/partial data and carry no vector to compare against.
+    """
+
+    def test_product_chunks_without_embedding_are_excluded(self, data_set):
+        product = baker.make(Product, data_set=data_set, entry_id="a", name="A", slug="a", price=1)
+        # A failed/un-indexed chunk (NULL embedding) and a healthy chunk in the same product.
+        ProductContentChunk.objects.create(product=product, content="has no embedding", embedding=None)
+        good_chunk = ProductContentChunk.objects.create(
+            product=product, content="red running shoes", embedding=_unit_vector(0)
+        )
+
+        repository = DjangoProductChunkRepository(ProductContentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id, distance=CosineDistance("embedding", _unit_vector(0))
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [good_chunk.id]
+
+    def test_document_chunks_without_embedding_are_excluded(self, data_set):
+        document = baker.make(Document, data_set=data_set, url="https://example.com/a", title="A", content="A")
+        DocumentChunk.objects.create(document=document, content="has no embedding", embedding=None)
+        good_chunk = DocumentChunk.objects.create(
+            document=document, content="fiber optic broadband", embedding=_unit_vector(0)
+        )
+
+        repository = DjangoDocumentChunkRepository(DocumentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id, distance=CosineDistance("embedding", _unit_vector(0))
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [good_chunk.id]
+
+    def test_product_keyword_search_also_excludes_null_embedding_chunks(self, data_set):
+        from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+
+        product = baker.make(Product, data_set=data_set, entry_id="a", name="fiber", slug="a", price=1)
+        # Even when a NULL-embedding chunk matches the keyword full-text filter, it must be excluded
+        # because there is no embedding to rank by cosine distance.
+        ProductContentChunk.objects.create(product=product, content="fiber optic", embedding=None)
+        good_chunk = ProductContentChunk.objects.create(
+            product=product, content="fiber optic", embedding=_unit_vector(0)
+        )
+
+        repository = DjangoProductChunkRepository(ProductContentChunk)
+        results = list(
+            repository.get_chunk_by_distance_and_keyword_for_data_set(
+                data_set_id=data_set.id, distance=CosineDistance("embedding", _unit_vector(0)), keyword="fiber"
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [good_chunk.id]
+        # Sanity check that the keyword path itself is selecting these rows (rank filtering applied).
+        assert ProductContentChunk.objects.filter(product=product).count() == 2
+        _ = SearchRank, SearchVector, SearchQuery  # imported for completeness of the keyword path

@@ -78,9 +78,11 @@ Set these when creating a data set in the UI (**Manage → Data Sets → New**) 
 Indexing = splitting an item into chunks and embedding each chunk. The flow is the same for products and documents:
 
 1. **Sync** imports products/documents from a source plugin (Shopify, Medusa, the Sample source, …) and creates/updates `Product` / `Document` rows.
-2. For each imported item, a Celery indexing task is queued:
-   - products → `catalog.tasks.index_product_task`
-   - documents → `catalog.tasks.index_document_task`
+2. For **newly created** items, or **updated items whose embedded content changed**, a Celery indexing task is queued:
+   - products → `catalog.tasks.index_product_task` (only when `name`/`description` changed — see `Product.get_content`)
+   - documents → `catalog.tasks.index_document_task` (only when `content` changed — see `Document.split`)
+
+   Source sync does **not** re-enqueue an item when its embedded content is unchanged, so a routine re-sync that brings back identical data does not trigger a redundant re-split + embedding API call. Non-embedded catalog fields (price, sku, properties, categories) are still updated on the row without re-indexing. To regenerate embeddings for items that were never indexed (or failed), run a [backfill/reindex](#backfill--reindex).
 3. The task calls `ProductEmbeddingGenerator.index_object` / `DocumentEmbeddingGenerator.index_object` (`catalog/services.py`), which:
    - **re-splits** the item into chunks (`Product.split` / `Document.split` using LangChain's `TokenTextSplitter`, bounded by the data set's chunk size/overlap), deleting any previous chunks;
    - **embeds** each chunk with the data set's configured provider/model/dimensions;
@@ -92,7 +94,7 @@ Sync is triggered from the UI (**Configure → Integrations → Sync**) or the A
 
 Two ways to regenerate embeddings, depending on whether you want it on the worker or in the foreground:
 
-**Management command (foreground, no worker required).** Re-splits and re-embeds using each data set's current configuration. Ideal for an initial backfill or recovering after a model/dimension change:
+**Management command (foreground, no worker required).** Re-splits and re-embeds using each data set's current configuration. Ideal for an initial backfill or recovering after a model/dimension change. If an individual item fails to index (e.g. an embedding API error), the command logs the failing item and continues with the rest, then exits with a non-zero status and a failure summary so partial failures are never silent:
 
 ```bash
 # Reindex products AND documents in one data set
@@ -123,6 +125,8 @@ At query time the agent embeds the user's question with the **same** data set pr
 - `agent.core.repositories.DjangoProductChunkRepository.get_chunk_by_distance_for_data_set` — `ORDER BY` `CosineDistance("embedding", query_vector)`, scoped to the data set.
 - `agent.core.repositories.DjangoDocumentChunkRepository.get_chunk_by_distance_for_data_set` — same, for documents.
 - The product retriever can additionally combine vector distance with PostgreSQL full-text ranking (`SearchRank` / `SearchVector`) via `get_chunk_by_distance_and_keyword_for_data_set`.
+
+**Chunks with `embedding IS NULL` are always skipped.** A cosine distance computed against `NULL` is `NULL`, so without this guard stale/partial chunks (e.g. an item whose embedding generation failed mid-way) could occupy result slots even though they carry no vector. All three chunk-query methods filter `embedding__isnull=False`, so failed-to-index content never surfaces in search results. Use `python manage.py reindex` to backfill any such chunks.
 
 The retrievers that wire this into agents live in `server/agent/core/retrievers/document_retriever.py` and the product retriever shipped with the product-search plugin (see [Concept: Product search Agent](/docs/customization/concept-product-search)).
 
