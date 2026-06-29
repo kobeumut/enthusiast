@@ -93,3 +93,66 @@ class TestDocumentRetrievalUsesPgvector:
         assert results[0].id == chunk_a.id
         assert results[0].content == "fiber optic broadband"
         assert results[0].distance <= results[1].distance
+
+
+class TestNullEmbeddingsAreExcludedFromRetrieval:
+    """Chunks with ``embedding IS NULL`` (not yet embedded) must never surface in retrieval.
+
+    The embedding column is ``null=True`` (see migration ``0014_pgvector_ann_indexes``); if such rows
+    reach the ``CosineDistance`` annotation they produce bogus / NULL distances and pollute results.
+    All three retrieval methods filter them out.
+    """
+
+    def test_document_vector_retrieval_excludes_null_embeddings(self, data_set):
+        document_embedded = baker.make(Document, data_set=data_set, url="https://example.com/a", title="A", content="A")
+        document_pending = baker.make(Document, data_set=data_set, url="https://example.com/b", title="B", content="B")
+        embedded_chunk = DocumentChunk.objects.create(
+            document=document_embedded, content="fiber optic broadband", embedding=_unit_vector(0)
+        )
+        DocumentChunk.objects.create(document=document_pending, content="mobile roaming tariff", embedding=None)
+
+        repository = DjangoDocumentChunkRepository(DocumentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id, distance=CosineDistance("embedding", _unit_vector(0))
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [embedded_chunk.id]
+
+    def test_product_vector_retrieval_excludes_null_embeddings(self, data_set):
+        product_embedded = baker.make(Product, data_set=data_set, entry_id="a", name="A", slug="a", price=1)
+        product_pending = baker.make(Product, data_set=data_set, entry_id="b", name="B", slug="b", price=1)
+        embedded_chunk = ProductContentChunk.objects.create(
+            product=product_embedded, content="red running shoes", embedding=_unit_vector(0)
+        )
+        ProductContentChunk.objects.create(product=product_pending, content="blue cotton shirts", embedding=None)
+
+        repository = DjangoProductChunkRepository(ProductContentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id, distance=CosineDistance("embedding", _unit_vector(0))
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [embedded_chunk.id]
+
+    def test_product_hybrid_retrieval_excludes_null_embeddings(self, data_set):
+        # Both chunks mention the keyword so their text ``rank`` passes the 0.05 threshold, but only
+        # one has an embedding. The pending (NULL embedding) chunk must be filtered out even though
+        # it matches the keyword.
+        product_embedded = baker.make(Product, data_set=data_set, entry_id="a", name="A", slug="a", price=1)
+        product_pending = baker.make(Product, data_set=data_set, entry_id="b", name="B", slug="b", price=1)
+        embedded_chunk = ProductContentChunk.objects.create(
+            product=product_embedded, content="running shoes for track", embedding=_unit_vector(0)
+        )
+        ProductContentChunk.objects.create(product=product_pending, content="running shoes on sale", embedding=None)
+
+        repository = DjangoProductChunkRepository(ProductContentChunk)
+        results = list(
+            repository.get_chunk_by_distance_and_keyword_for_data_set(
+                data_set_id=data_set.id, distance=CosineDistance("embedding", _unit_vector(0)), keyword="shoes"
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [embedded_chunk.id]
