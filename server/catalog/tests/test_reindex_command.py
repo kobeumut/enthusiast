@@ -5,8 +5,14 @@ from django.core.management import CommandError, call_command
 from model_bakery import baker
 
 from catalog.models import DataSet, Document, DocumentChunk, Product, ProductContentChunk
+from catalog.models.data_set import EMBEDDING_VECTOR_DIMENSIONS
 
 pytestmark = pytest.mark.django_db
+
+# The chunk embedding columns are ``vector(EMBEDDING_VECTOR_DIMENSIONS)`` (see migration
+# ``0014_pgvector_ann_indexes``), so the fake provider must return a vector of that dimensionality.
+FAKE_EMBEDDING = [0.01] * EMBEDDING_VECTOR_DIMENSIONS
+STALE_EMBEDDING = [0.9] * EMBEDDING_VECTOR_DIMENSIONS
 
 
 class FakeEmbeddingProvider:
@@ -19,7 +25,7 @@ class FakeEmbeddingProvider:
         self._dimensions = dimensions
 
     def generate_embeddings(self, content):  # noqa: ARG002
-        return [0.01, 0.02, 0.03]
+        return list(FAKE_EMBEDDING)
 
 
 @pytest.fixture
@@ -60,7 +66,7 @@ class TestReindexCommand:
         assert all(chunk.embedding is not None for chunk in product_chunks)
         assert all(chunk.embedding is not None for chunk in document_chunks)
         for chunk in product_chunks:
-            assert list(chunk.embedding) == pytest.approx([0.01, 0.02, 0.03], rel=1e-3)
+            assert list(chunk.embedding) == pytest.approx(FAKE_EMBEDDING, rel=1e-3)
 
     def test_reindex_products_only_does_not_touch_documents(self, mock_registry_cls, data_set_with_items):
         mock_registry_cls.return_value.provider_for_dataset.return_value = FakeEmbeddingProvider
@@ -83,7 +89,7 @@ class TestReindexCommand:
         product = data_set_with_items.products.first()
 
         # Seed a stale chunk that should be removed during re-split.
-        baker.make(ProductContentChunk, product=product, content="stale", embedding=[0.9, 0.8, 0.7])
+        baker.make(ProductContentChunk, product=product, content="stale", embedding=list(STALE_EMBEDDING))
         assert ProductContentChunk.objects.filter(product=product).count() == 1
 
         call_command("reindex", data_set=data_set_with_items.id, products=True)
@@ -91,7 +97,7 @@ class TestReindexCommand:
         chunks = ProductContentChunk.objects.filter(product=product)
         assert chunks.count() == 1
         assert chunks.first().content != "stale"
-        assert list(chunks.first().embedding) == pytest.approx([0.01, 0.02, 0.03], rel=1e-3)
+        assert list(chunks.first().embedding) == pytest.approx(FAKE_EMBEDDING, rel=1e-3)
 
     def test_reindex_unknown_data_set_raises(self, mock_registry_cls):
         with pytest.raises(CommandError):
