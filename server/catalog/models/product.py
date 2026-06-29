@@ -5,7 +5,12 @@ from .data_set import DataSet
 
 
 class Product(models.Model):
-    data_set = models.ForeignKey(DataSet, on_delete=models.PROTECT, related_name="products")
+    # ``db_index=False`` because the explicit ``catalog_product_data_set_idx`` index
+    # (and the ``uq_product`` constraint on (data_set, entry_id)) already index the
+    # data_set lookup path used by retrieval.
+    data_set = models.ForeignKey(
+        DataSet, on_delete=models.PROTECT, related_name="products", db_index=False
+    )
     entry_id = models.CharField(max_length=255)
     name = models.CharField(max_length=255)
     slug = models.CharField(max_length=255)
@@ -18,6 +23,7 @@ class Product(models.Model):
     class Meta:
         db_table_comment = "List of products from a given data set."
         constraints = [models.UniqueConstraint(fields=["data_set", "entry_id"], name="uq_product")]
+        indexes = [models.Index(fields=["data_set"], name="catalog_product_data_set_idx")]
 
     def get_content(self):
         return f"{self.name} {self.description}"

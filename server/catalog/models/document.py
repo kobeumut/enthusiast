@@ -5,7 +5,12 @@ from .data_set import DataSet
 
 
 class Document(models.Model):
-    data_set = models.ForeignKey(DataSet, related_name="documents", on_delete=models.PROTECT)
+    # ``db_index=False`` because the explicit ``catalog_document_data_set_idx`` index
+    # (and the ``uq_document`` constraint on (data_set, url)) already index the
+    # data_set lookup path used by retrieval.
+    data_set = models.ForeignKey(
+        DataSet, related_name="documents", on_delete=models.PROTECT, db_index=False
+    )
     url = models.CharField(max_length=255)
     title = models.CharField(max_length=1024)
     content = models.TextField()
@@ -17,6 +22,7 @@ class Document(models.Model):
             "regarding company's offer."
         )
         constraints = [models.UniqueConstraint(fields=["data_set", "url"], name="uq_document")]
+        indexes = [models.Index(fields=["data_set"], name="catalog_document_data_set_idx")]
 
     def split(self, chunk_size, chunk_overlap):
         """
