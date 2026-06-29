@@ -17,7 +17,9 @@ While a single data set is usually enough to get started, there are scenarios wh
   - **Embedding Provider:** The plugin for generating content embeddings (default: OpenAI).
   - **Embedding Model:** The model used for embeddings (default: large).
   - **Embedding Vector Size:** The size of the embeddings vector (default: 512).
-3. Click "Create" at the bottom. 
+3. Click "Create" at the bottom.
+
+The embedding provider/model/vector size you choose here drive how content is chunked and embedded into the [PostgreSQL pgvector store](/docs/management/vector-store). Changing them on an existing data set requires a [reindex](/docs/management/vector-store#backfill--reindex).
 
 Now, you're ready to connect your [data sources](/docs/synchronize/connect-product-source).
 

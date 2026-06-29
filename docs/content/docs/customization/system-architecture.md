@@ -18,7 +18,7 @@ Enthusiast contains of two main components:
 The server is organized into a few separate modules that interact with each other:
 
 1. Agent - responsible for managing agent's state and orchestrating agentic workflows
-2. Catalog - manages processes of indexing product and document data
+2. Catalog - manages processes of indexing product and document data (embeddings are stored in PostgreSQL via pgvector — see the [Vector Store guide](/docs/management/vector-store))
 3. Sync - tracks catalog synchronization status
 4. Account - handles user permissions and authentication
 
