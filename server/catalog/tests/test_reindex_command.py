@@ -152,6 +152,8 @@ class TestReindexCommand:
         output = out.getvalue()
         assert "2 ok / 1 fail" in output
         assert "product-2" in output
+        # The summary includes the exception type so failures stay actionable.
+        assert "RuntimeError" in output
         assert "Reindex complete with 1 failed item" in output
 
     def test_reindex_fail_fast_stops_on_first_error(self, mock_registry_cls, data_set_with_products):
@@ -248,3 +250,31 @@ class TestReindexCommand:
         output = out.getvalue()
         assert "ok" in output  # summary present
         assert "[1/3]" not in output  # per-item progress suppressed
+
+    # -- option validation --------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        ("options", "expected_flag"),
+        [
+            ({"max_attempts": 0}, "--max-attempts"),
+            ({"retry_backoff": -1.0}, "--retry-backoff"),
+            ({"limit": -1}, "--limit"),
+            ({"limit": 0}, "--limit"),
+        ],
+    )
+    def test_reindex_rejects_invalid_options(
+        self, mock_registry_cls, data_set_with_items, options, expected_flag
+    ):
+        mock_registry_cls.return_value.provider_for_dataset.return_value = FakeEmbeddingProvider
+
+        # Invalid numeric options are rejected up front with a clear CommandError rather than
+        # silently clamped or crashing later (e.g. a negative --limit breaks queryset slicing).
+        with pytest.raises(CommandError) as exc_info:
+            call_command(
+                "reindex",
+                data_set=data_set_with_items.id,
+                products=True,
+                stdout=StringIO(),
+                **options,
+            )
+        assert expected_flag in str(exc_info.value)

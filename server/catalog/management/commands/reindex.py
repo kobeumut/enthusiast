@@ -87,14 +87,25 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self.verbosity = options.get("verbosity", 1)
         self.fail_fast = options["fail_fast"]
-        self.max_attempts = max(1, options["max_attempts"])
-        self.retry_backoff = max(0.0, options["retry_backoff"])
 
         data_set_id = options["data_set"]
         reindex_products = options["products"]
         reindex_documents = options["documents"]
         from_id = options["from_id"]
         limit = options["limit"]
+        max_attempts = options["max_attempts"]
+        retry_backoff = options["retry_backoff"]
+
+        # Validate options up front with clear errors instead of silently clamping them or
+        # crashing later (e.g. a negative --limit is not supported by queryset slicing).
+        if max_attempts < 1:
+            raise CommandError("--max-attempts must be at least 1.")
+        if retry_backoff < 0.0:
+            raise CommandError("--retry-backoff must not be negative.")
+        if limit is not None and limit < 1:
+            raise CommandError("--limit must be a positive integer.")
+        self.max_attempts = max_attempts
+        self.retry_backoff = retry_backoff
 
         # When neither flag is provided, reindex both products and documents.
         if not reindex_products and not reindex_documents:
@@ -238,6 +249,7 @@ class Command(BaseCommand):
                     attempt,
                     self.max_attempts,
                     exc,
+                    exc_info=True,
                 )
                 if attempt < self.max_attempts:
                     delay = self.retry_backoff * (2 ** (attempt - 1))
@@ -248,7 +260,9 @@ class Command(BaseCommand):
                         )
                     if delay > 0:
                         time.sleep(delay)
-        return str(last_error)
+        # Include the exception class so the summary stays actionable even when the message is
+        # blank or ambiguous (e.g. "ValueError" vs "KeyError: 'foo'").
+        return f"{type(last_error).__name__}: {last_error}"
 
     def _print_summary(self):
         """Print the aggregated ok/failed summary, including the list of failed items."""
