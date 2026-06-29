@@ -27,6 +27,12 @@ class FakeEmbeddingProvider:
     def generate_embeddings(self, content):  # noqa: ARG002
         return list(FAKE_EMBEDDING)
 
+    def generate_embeddings_batch(self, contents):  # noqa: ARG002
+        # Mirrors a real batched provider: one vector per input, in order. ``index_object``
+        # now embeds every chunk through this method instead of one ``generate_embeddings``
+        # call per chunk.
+        return [list(FAKE_EMBEDDING) for _ in contents]
+
 
 @pytest.fixture
 def data_set_with_items():
