@@ -26,3 +26,11 @@ def index_all_documents_task(data_set_id: int):
 def index_product_task(product_id: int):
     product = Product.objects.get(id=product_id)
     ProductEmbeddingGenerator.index_object(product)
+
+
+@shared_task
+def index_all_products_task(data_set_id: int):
+    data_set = DataSet.objects.get(id=data_set_id)
+    product_ids = data_set.products.values_list("id", flat=True)
+    for product_id in product_ids:
+        index_product_task.apply_async([product_id])

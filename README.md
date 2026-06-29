@@ -50,6 +50,10 @@ Get started with Enthusiast by either:
 
 Check our [Getting Started guide](https://upsidelab.io/tools/enthusiast/docs/getting-started/installation) to set up your local instance and see Enthusiast in action in under 5 minutes.
 
+## Storage & Retrieval
+
+Enthusiast stores its Retrieval-Augmented Generation (RAG) index **inside its existing PostgreSQL database** using the [pgvector](https://github.com/pgvector/pgvector) extension — there is no separate vector database to deploy. Product and document chunks and their embeddings live in PostgreSQL and are queried via cosine-distance vector search. See the [Vector Store (pgvector) guide](https://upsidelab.io/tools/enthusiast/docs/management/vector-store) for the concrete setup, backfill/reindex commands, troubleshooting, and a manual QA checklist.
+
 ## Pre-built Integrations
 
 Connect to your e-commerce stack in minutes, with minimal configuration required.
