@@ -10,7 +10,7 @@ This page describes the concrete setup path, how data gets indexed, how it is qu
 |---|---|
 | Vector database | PostgreSQL with the `vector` extension (pgvector) |
 | Container image | `pgvector/pgvector:pg17` (see `docker-compose.yml` / `docker-compose.development.yml`) |
-| Extension install | Django migration `catalog/migrations/0001_install_pgvector.py` (`VectorExtension()`) |
+| Extension install | Django migration `server/catalog/migrations/0001_install_pgvector.py` (`VectorExtension()`) |
 | Product chunks | `catalog.ProductContentChunk` — `embedding = pgvector.django.VectorField(null=True)` |
 | Document chunks | `catalog.DocumentChunk` — `embedding = pgvector.django.VectorField(null=True)` |
 | Similarity search | `pgvector.django.CosineDistance` |
@@ -51,7 +51,7 @@ The API container runs migrations automatically on startup when `RUN_MIGRATIONS=
 docker compose exec api python manage.py migrate
 ```
 
-Migration `catalog/0001_install_pgvector` executes `CREATE EXTENSION IF NOT EXISTS vector`. If this migration has run, the extension is installed:
+Migration `server/catalog/migrations/0001_install_pgvector.py` executes `CREATE EXTENSION IF NOT EXISTS vector`. If this migration has run, the extension is installed:
 
 ```bash
 docker compose exec postgres psql -U enthusiast -d enthusiast -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
@@ -59,7 +59,7 @@ docker compose exec postgres psql -U enthusiast -d enthusiast -c "SELECT extname
 
 ### 3. Configure a data set's embedding model
 
-Embeddings are configured **per data set** on the `DataSet` model (`catalog/models/data_set.py`):
+Embeddings are configured **per data set** on the `DataSet` model (`server/catalog/models/data_set.py`):
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -124,12 +124,12 @@ At query time the agent embeds the user's question with the **same** data set pr
 - `agent.core.repositories.DjangoDocumentChunkRepository.get_chunk_by_distance_for_data_set` — same, for documents.
 - The product retriever can additionally combine vector distance with PostgreSQL full-text ranking (`SearchRank` / `SearchVector`) via `get_chunk_by_distance_and_keyword_for_data_set`.
 
-The retrievers that wire this into agents live in `agent/core/retrievers/document_retriever.py` and the product retriever shipped with the product-search plugin (see [Concept: Product search Agent](/docs/customization/concept-product-search)).
+The retrievers that wire this into agents live in `server/agent/core/retrievers/document_retriever.py` and the product retriever shipped with the product-search plugin (see [Concept: Product search Agent](/docs/customization/concept-product-search)).
 
 ## Troubleshooting
 
 **`vector` extension / `type "vector" does not exist`**
-The pgvector extension is missing. Run migrations (`docker compose exec api python manage.py migrate`) so `catalog/0001_install_pgvector` executes. Confirm the database image is `pgvector/pgvector:*`, not plain `postgres`, and that the DB role can `CREATE EXTENSION`.
+The pgvector extension is missing. Run migrations (`docker compose exec api python manage.py migrate`) so `server/catalog/migrations/0001_install_pgvector.py` executes. Confirm the database image is `pgvector/pgvector:*`, not plain `postgres`, and that the DB role can `CREATE EXTENSION`.
 
 **Embedding API key missing / `OPENAI_API_KEY`**
 With the default OpenAI provider, sync and indexing tasks fail at embedding time if the key is empty or invalid. Set `OPENAI_API_KEY` in `server/.env` and restart the worker: `docker compose restart worker`.

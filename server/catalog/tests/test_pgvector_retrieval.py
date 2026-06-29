@@ -36,6 +36,7 @@ class TestProductRetrievalUsesPgvector:
             )
         )
 
+        assert len(results) == 2
         assert results[0].id == chunk_a.id
         assert results[0].content == "red running shoes"
         # pgvector annotates the computed distance; the nearest chunk is closest to 0.
@@ -70,6 +71,7 @@ class TestDocumentRetrievalUsesPgvector:
             )
         )
 
+        assert len(results) == 2
         assert results[0].id == chunk_a.id
         assert results[0].content == "fiber optic broadband"
         assert results[0].distance <= results[1].distance

@@ -34,6 +34,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        self.verbosity = options.get("verbosity", 1)
         data_set_id = options["data_set"]
         reindex_products = options["products"]
         reindex_documents = options["documents"]
@@ -75,5 +76,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  {label}: {total} to reindex")
         for index, obj in enumerate(queryset.iterator(), start=1):
             index_object(obj)
-            self.stdout.write(f"    [{index}/{total}] {label.lower()} {getattr(obj, identifier_attr)}")
+            # Per-item progress is noisy on large backfills; only print it at -v 2 and above.
+            if self.verbosity >= 2:
+                self.stdout.write(f"    [{index}/{total}] {label.lower()} {getattr(obj, identifier_attr)}")
         self.stdout.write(self.style.SUCCESS(f"  {label} reindexed: {total}"))
