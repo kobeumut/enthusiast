@@ -92,8 +92,13 @@ class Command(BaseCommand):
                 index_object(obj)
             except Exception as exc:  # noqa: BLE001 — log every failure class and keep going
                 failures += 1
+                # Include the exception class name: ``str(exc)`` can be empty (e.g. ``RuntimeError()``),
+                # and the type makes failures far easier to triage from command output.
                 self.stdout.write(
-                    self.style.ERROR(f"    [{index}/{total}] FAILED {label.lower()} {identifier}: {exc}")
+                    self.style.ERROR(
+                        f"    [{index}/{total}] FAILED {label.lower()} {identifier}: "
+                        f"{exc.__class__.__name__}: {exc}"
+                    )
                 )
                 continue
             succeeded += 1

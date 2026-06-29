@@ -1,3 +1,4 @@
+from io import StringIO
 from unittest.mock import patch
 
 import pytest
@@ -109,12 +110,15 @@ class TestReindexCommand:
 class TestReindexCommandFailureHandling:
     def test_continues_after_item_failure_and_raises_command_error(self, mock_registry_cls, data_set_with_items):
         mock_registry_cls.return_value.provider_for_dataset.return_value = FakeEmbeddingProvider
+        out = StringIO()
         # Product indexing fails on every product, but the run must keep going and index documents.
         with patch.object(ProductEmbeddingGenerator, "index_object", side_effect=RuntimeError("boom")):
             with pytest.raises(CommandError):
-                call_command("reindex", data_set=data_set_with_items.id)
+                call_command("reindex", data_set=data_set_with_items.id, stdout=out)
 
         # The document was still indexed despite the product failure (the run did not abort early).
         assert DocumentChunk.objects.filter(document__data_set=data_set_with_items).exists()
         # No product chunks were committed for the failing product.
         assert not ProductContentChunk.objects.filter(product__data_set=data_set_with_items).exists()
+        # The failure line includes the exception class name so it can be triaged from CLI output.
+        assert "RuntimeError" in out.getvalue()
