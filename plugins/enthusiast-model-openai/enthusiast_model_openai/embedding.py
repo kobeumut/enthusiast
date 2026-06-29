@@ -40,7 +40,14 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         Returns:
             list[list[float]]: Embedding vectors aligned with ``contents`` order; the
             element at position ``i`` is the embedding of ``contents[i]``.
+
+        Returns an empty list immediately when there is nothing to embed, so no
+        ``OpenAI`` client is constructed (and thus validated/configured) for empty
+        input.
         """
+        if not contents:
+            return []
+
         embeddings: list[list[float]] = [[] for _ in range(len(contents))]
         client = OpenAI()
         for start in range(0, len(contents), EMBEDDINGS_BATCH_SIZE):

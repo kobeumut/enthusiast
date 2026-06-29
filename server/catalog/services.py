@@ -38,7 +38,11 @@ class DataSetObjectEmbeddingsGenerator(Generic[T]):
         contents = [chunk.content for chunk in chunks]
         embeddings = embedding_provider.generate_embeddings_batch(contents)
 
-        for chunk, embedding in zip(chunks, embeddings):
+        # Fail fast if the provider returns a different number of embeddings than the
+        # number of chunks it was asked to embed. A silent ``zip`` truncation would
+        # otherwise leave some newly-split chunks without embeddings while still
+        # persisting the partial results, which is hard to detect at runtime.
+        for chunk, embedding in zip(chunks, embeddings, strict=True):
             chunk.set_embedding(embedding)
             chunk.save()
 
