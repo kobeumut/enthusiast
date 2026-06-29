@@ -1,7 +1,14 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from ..config import AgentConfig
+if TYPE_CHECKING:
+    # Imported only for type checking to avoid a circular import with ``enthusiast_common.config``
+    # (config.base references ``BaseAgent``, while this module previously imported ``AgentConfig``
+    # purely as a return annotation).
+    from ..config import AgentConfig
 
 
 class ConfigType(StrEnum):

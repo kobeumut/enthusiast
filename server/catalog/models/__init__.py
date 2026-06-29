@@ -1,5 +1,4 @@
-from .data_set import DataSet
-from .data_set import EMBEDDING_VECTOR_DIMENSIONS
+from .data_set import EMBEDDING_VECTOR_DIMENSIONS, DataSet
 from .document import Document
 from .document_chunk import DocumentChunk
 from .document_source import DocumentSource
