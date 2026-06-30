@@ -33,6 +33,16 @@ from agent.core.repositories import (
 from agent.core.retrievers import DocumentRetriever, ProductRetriever
 
 
+#: Platform-default cosine *distance* similarity floor for the pure-vector retrieval path. A chunk
+#: whose distance to the query exceeds this bound is dropped at the SQL level, so the ranklist never
+#: fills ``max_objects`` / ``number_of_products`` with irrelevant chunks. Cosine distance for
+#: normalised embeddings sits in ``[0, 2]``; ``0.6`` (cosine similarity ``≈ 0.4``) keeps topically
+#: related hits while cutting the orthogonal / unrelated tail. It is the *starting* value the DRA
+#: recommended observing from — tune per agent/dataset via ``config.retrievers.*.extra_kwargs`` and
+#: set to ``None`` to restore the historical "always return top-K" behaviour.
+DEFAULT_COSINE_DISTANCE_THRESHOLD = 0.6
+
+
 class DefaultAgentConfig(BaseModel):
     repositories: RepositoriesConfig
     retrievers: RetrieversConfig
@@ -55,12 +65,16 @@ def get_default_config() -> DefaultAgentConfig:
             agent=DjangoAgentRepository,
         ),
         retrievers=RetrieversConfig(
-            document=RetrieverConfig(retriever_class=DocumentRetriever),
+            document=RetrieverConfig(
+                retriever_class=DocumentRetriever,
+                extra_kwargs={"distance_threshold": DEFAULT_COSINE_DISTANCE_THRESHOLD},
+            ),
             product=RetrieverConfig(
                 retriever_class=ProductRetriever,
                 extra_kwargs={
                     "max_sample_products": 12,
                     "number_of_products": 12,
+                    "distance_threshold": DEFAULT_COSINE_DISTANCE_THRESHOLD,
                 },
             ),
         ),

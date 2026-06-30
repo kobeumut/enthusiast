@@ -77,6 +77,7 @@ class DjangoDocumentChunkRepository(BaseDjangoRepository[DocumentChunk], BaseMod
         distance: CosineDistance,
         filters: Optional[RetrievalFilters] = None,
         ef_search: Optional[int] = None,
+        distance_threshold: Optional[float] = None,
     ) -> QuerySet[DocumentChunk] | list[DocumentChunk]:
         """Return this dataset's document chunks ranked by cosine distance to ``distance``.
 
@@ -90,6 +91,12 @@ class DjangoDocumentChunkRepository(BaseDjangoRepository[DocumentChunk], BaseMod
                 LOCAL`` is transaction-scoped and the queryset is lazy, the result is materialised to
                 a list within that transaction. ``None`` keeps the server default and returns a lazy
                 queryset (the historical behaviour).
+            distance_threshold: Optional upper bound on cosine distance. When set, chunks whose
+                distance exceeds ``distance_threshold`` are filtered out at the SQL level, so the
+                ranking never returns chunks that are too dissimilar to the query even if fewer than
+                ``max_objects`` survive. ``None`` keeps the historical "always return top-K" behaviour
+                (no similarity floor). The platform default is configured on the retriever (see
+                ``agent.core.agents.default_config.DEFAULT_COSINE_DISTANCE_THRESHOLD``).
         """
         queryset = (
             self.model.objects.annotate(distance=distance)
@@ -97,6 +104,8 @@ class DjangoDocumentChunkRepository(BaseDjangoRepository[DocumentChunk], BaseMod
             .filter(document__data_set_id__exact=data_set_id, embedding__isnull=False)
             .order_by("distance")
         )
+        if distance_threshold is not None:
+            queryset = queryset.filter(distance__lte=distance_threshold)
         document_filter = document_filter_q(filters)
         if document_filter is not None:
             queryset = queryset.filter(document_filter)
@@ -143,6 +152,7 @@ class DjangoProductChunkRepository(
         distance: CosineDistance,
         filters: Optional[RetrievalFilters] = None,
         ef_search: Optional[int] = None,
+        distance_threshold: Optional[float] = None,
     ) -> QuerySet[ProductContentChunk] | list[ProductContentChunk]:
         """Return this dataset's product chunks ranked by cosine distance to ``distance``.
 
@@ -154,6 +164,13 @@ class DjangoProductChunkRepository(
             ef_search: When set, runs ``SET LOCAL hnsw.ef_search = N`` inside a transaction before
                 evaluating the query (runtime HNSW tuning). See
                 ``DjangoDocumentChunkRepository.get_chunk_by_distance_for_data_set``.
+            distance_threshold: Optional upper bound on cosine distance. When set, chunks whose
+                distance exceeds ``distance_threshold`` are filtered out at the SQL level, so the
+                ranking never returns chunks that are too dissimilar to the query even if fewer than
+                ``max_objects``/``number_of_products`` survive. ``None`` keeps the historical "always
+                return top-K" behaviour (no similarity floor). The platform default is configured on
+                the retriever (see
+                ``agent.core.agents.default_config.DEFAULT_COSINE_DISTANCE_THRESHOLD``).
         """
         queryset = (
             self.model.objects.annotate(distance=distance)
@@ -161,6 +178,8 @@ class DjangoProductChunkRepository(
             .filter(product__data_set_id__exact=data_set_id, embedding__isnull=False)
             .order_by("distance")
         )
+        if distance_threshold is not None:
+            queryset = queryset.filter(distance__lte=distance_threshold)
         product_filter = product_filter_q(filters)
         if product_filter is not None:
             queryset = queryset.filter(product_filter)

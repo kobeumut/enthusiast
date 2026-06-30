@@ -42,6 +42,9 @@ class ProductRetriever(BaseProductRetriever):
       rerank over the candidate pool, promoting chunks that share the query's exact terms.
     * **HNSW tuning** – ``ef_search`` runs ``SET LOCAL hnsw.ef_search = N`` for the vector query,
       tuning recall at runtime without rebuilding the index.
+    * **Similarity floor** – ``distance_threshold`` drops chunks whose cosine distance to the query
+      exceeds the configured bound, so the ranklist never surfaces irrelevant chunks just to fill
+      ``number_of_products``.
 
     The explicit raw-SQL path (``find_products_with_sql``) remains available for the dedicated SQL
     tool, but natural-language product search never depends on LLM-generated SQL.
@@ -61,6 +64,7 @@ class ProductRetriever(BaseProductRetriever):
         reranker_enabled: bool = False,
         reranker: Optional[BaseReranker] = None,
         ef_search: Optional[int] = None,
+        distance_threshold: Optional[float] = None,
     ):
         self.data_set_id = data_set_id
         self.data_set_repo = data_set_repo
@@ -74,6 +78,7 @@ class ProductRetriever(BaseProductRetriever):
         self.reranker_enabled = reranker_enabled or reranker is not None
         self.reranker = reranker or (LexicalReranker() if self.reranker_enabled else None)
         self.ef_search = ef_search
+        self.distance_threshold = distance_threshold
         self._sql_validator = SQLValidator(allowed_table_name="catalog_product", data_set_id=self.data_set_id)
 
     def find_products_matching_query(
@@ -122,7 +127,11 @@ class ProductRetriever(BaseProductRetriever):
     def _vector_chunks(self, distance, filters: Optional[RetrievalFilters], pool: Optional[int]) -> list:
         """The vector-ranked candidate chunks (nearest-first), bounded by ``pool`` when set."""
         chunks = self.product_chunk_repo.get_chunk_by_distance_for_data_set(
-            self.data_set_id, distance, filters=filters, ef_search=self.ef_search
+            self.data_set_id,
+            distance,
+            filters=filters,
+            ef_search=self.ef_search,
+            distance_threshold=self.distance_threshold,
         )
         if pool is not None:
             return list(chunks[:pool])
