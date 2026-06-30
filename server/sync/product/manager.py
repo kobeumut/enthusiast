@@ -17,21 +17,37 @@ class ProductSyncManager(SyncManager[ProductDetails]):
         return DataSetSource(plugin_name=source.plugin_name, data_set_id=source.data_set_id, config=source.config)
 
     def _sync_item(self, data_set_id: int, item_data: ProductDetails):
-        """Creates a product in the database and queues indexing only when needed.
+        """Creates or updates a product and re-indexes it only when its content changed.
 
-        Product embeddings are derived from ``name`` + ``description`` (see ``Product.get_content()``),
-        so a re-index is queued only for newly created products or when those fields actually changed.
-        This avoids enqueuing a full re-split + embedding API call for every product on every sync when
-        the content is unchanged.
+        A no-op re-sync (same ``name``/``description``/``sku``/``properties``/``categories``/
+        ``price``) used to re-enqueue ``index_product_task`` unconditionally, which made
+        ``Product.split`` wipe and rebuild every chunk and re-run the embedding API. That is
+        pure cost for unchanged content. We now store a canonical ``content_hash`` and skip the
+        re-index when an existing product's content is byte-for-byte identical. New products and
+        genuinely changed products are still re-indexed as before.
 
         Args:
             data_set_id (int): obligatory, a data set to which imported data belongs to.
             item_data (ProductDetails): item details.
         """
-        existing = Product.objects.filter(data_set_id=data_set_id, entry_id=item_data.entry_id).first()
-        needs_reindex = existing is None or self._product_content_changed(existing, item_data)
+        new_hash = Product.compute_content_hash(
+            name=item_data.name,
+            description=item_data.description,
+            sku=item_data.sku,
+            properties=item_data.properties,
+            categories=item_data.categories,
+            price=item_data.price,
+        )
+        # Look up the previously stored hash *before* update_or_create overwrites it, so we can
+        # decide whether the content actually changed. ``only('content_hash')`` keeps this cheap;
+        # the (data_set, entry_id) lookup is covered by the ``uq_product`` constraint.
+        existing = (
+            Product.objects.filter(data_set_id=data_set_id, entry_id=item_data.entry_id)
+            .only("content_hash")
+            .first()
+        )
 
-        item, _created = Product.objects.update_or_create(
+        item, created = Product.objects.update_or_create(
             data_set_id=data_set_id,
             entry_id=item_data.entry_id,
             defaults={
@@ -42,16 +58,13 @@ class ProductSyncManager(SyncManager[ProductDetails]):
                 "properties": item_data.properties,
                 "categories": item_data.categories,
                 "price": item_data.price,
+                "content_hash": new_hash,
             },
         )
-        if needs_reindex:
+
+        # created=True => brand new product (existing is None) => always index.
+        # Otherwise index only when the content hash actually changed; an unchanged hash means
+        # the embeddings are already up to date. A null old hash (legacy row) forces an index,
+        # which backfills it.
+        if created or existing.content_hash != new_hash:
             index_product_task.apply_async([item.id])
-
-    @staticmethod
-    def _product_content_changed(existing: Product, item_data: ProductDetails) -> bool:
-        """Returns whether the product fields that feed the embedding changed during this sync.
-
-        Only ``name`` and ``description`` are embedded (``Product.get_content``), so changes to the
-        other catalog fields (price, sku, properties, categories) do not require a re-index.
-        """
-        return existing.name != item_data.name or existing.description != item_data.description
