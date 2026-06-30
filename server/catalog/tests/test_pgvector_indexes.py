@@ -11,7 +11,11 @@ These tests assert the deliberate decisions made for chunk-table embeddings:
 * Retrieval still returns chunks ordered by ascending cosine distance.
 * The ``catalog.W001`` system check flags data sets whose configured dimension
   drifts from the shared chunk-table column dimension.
+* The HNSW indexes are built with ``CREATE INDEX CONCURRENTLY`` (no table lock)
+  via a dedicated ``atomic = False`` migration (YAZ-17).
 """
+
+import importlib
 
 import pytest
 from django.db import connection
@@ -159,3 +163,25 @@ def test_system_check_warns_on_dimension_mismatch():
 def test_system_check_is_quiet_when_dimensions_match():
     DataSet.objects.create(name="ok", embedding_vector_dimensions=DIM)
     assert check_data_set_embedding_dimensions(None) == []
+
+
+def test_hnsw_indexes_are_built_concurrently():
+    """The HNSW indexes must be built via CREATE INDEX CONCURRENTLY (no table lock).
+
+    Regression guard for YAZ-17: the two HNSW ``AddIndex`` operations were split out
+    of 0014 into a dedicated ``atomic = False`` migration that uses
+    ``AddIndexConcurrently``, so PostgreSQL builds them without an
+    ``ACCESS EXCLUSIVE`` lock on the (potentially large) chunk tables. Importing the
+    migration module by string because migration module names start with a digit.
+    """
+    from django.contrib.postgres.operations import AddIndexConcurrently
+
+    migration = importlib.import_module("catalog.migrations.0016_hnsw_indexes_concurrent")
+
+    assert migration.Migration.atomic is False
+    assert len(migration.Migration.operations) == 2
+    assert all(isinstance(op, AddIndexConcurrently) for op in migration.Migration.operations)
+    assert {op.index.name for op in migration.Migration.operations} == {
+        "document_chunk_embedding_idx",
+        "product_chunk_embedding_idx",
+    }
