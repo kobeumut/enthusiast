@@ -119,7 +119,11 @@ class DataSetDetailView(RetrieveAPIView):
         instance = self.get_object()
 
         # Embedding configuration is validated (and rejected on change) by DataSetUpdateSerializer.
-        serializer = DataSetUpdateSerializer(instance, data=request.data, partial=True)
+        # Pass the standard DRF serializer context explicitly (request/view/format) so the
+        # serializer behaves identically to one obtained via get_serializer().
+        serializer = DataSetUpdateSerializer(
+            instance, data=request.data, partial=True, context=self.get_serializer_context()
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
 

@@ -66,7 +66,18 @@ class DataSetCreateSerializer(DataSetSerializer):
 
         embedding_provider = data.get("embedding_provider")
         embedding_model = data.get("embedding_model")
-        if embedding_provider and embedding_model and embedding_vector_dimensions is not None:
+
+        # The effective dimension is ALWAYS the global constant: the field defaults to it on
+        # the model, and we just rejected any explicit non-matching value. When the caller
+        # omits the field we normalize it here and write it back into the validated data, so
+        # that the provider constraint check below always runs against the dimension that will
+        # actually be stored. Without this, sending only provider+model would skip the
+        # constraint check and let a provider/model that does not support 512 slip through.
+        if embedding_vector_dimensions is None:
+            embedding_vector_dimensions = EMBEDDING_VECTOR_DIMENSIONS
+            data["embedding_vector_dimensions"] = EMBEDDING_VECTOR_DIMENSIONS
+
+        if embedding_provider and embedding_model:
             try:
                 provider_class = EmbeddingProviderRegistry().provider_class_by_name(embedding_provider)
             except Exception:
