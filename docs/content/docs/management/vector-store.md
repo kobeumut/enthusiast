@@ -71,16 +71,18 @@ Embeddings are configured **per data set** on the `DataSet` model (`server/catal
 
 Set these when creating a data set in the UI (**Manage → Data Sets → New**) or via the API. The available providers are configured by `CATALOG_EMBEDDING_PROVIDERS` in `pecl/settings.py` (ships with the OpenAI provider). Generating embeddings with OpenAI requires `OPENAI_API_KEY` in `server/.env`.
 
-> If you change `embedding_model` or `embedding_vector_dimensions` on an existing data set, [reindex](#backfill--reindex) so stored vectors match the new configuration.
+> **The vector dimension is fixed platform-wide at `EMBEDDING_VECTOR_DIMENSIONS` (512).** Every data set stores its chunk embeddings in the same shared `vector(512)` pgvector column (pgvector ANN indexes require a single fixed dimension), so `embedding_vector_dimensions` is **not** a per-data-set setting: it is forced to `512` at creation time, the embedding provider/model/dimensions are **immutable** on an existing data set, and a non-`512` value is rejected by the API with a clear error. To use a different dimension you must change `EMBEDDING_VECTOR_DIMENSIONS` in code **and** run a data migration that recreates both chunk embedding columns at the new dimension, then reindex. The `catalog.W001` system check is a defensive backstop that warns about any data set row that drifts from the fixed dimension (e.g. legacy data or direct DB edits).
 
 ## How content gets indexed
 
 Indexing = splitting an item into chunks and embedding each chunk. The flow is the same for products and documents:
 
 1. **Sync** imports products/documents from a source plugin (Shopify, Medusa, the Sample source, …) and creates/updates `Product` / `Document` rows.
-2. For each imported item, a Celery indexing task is queued:
-   - products → `catalog.tasks.index_product_task`
-   - documents → `catalog.tasks.index_document_task`
+2. For **newly created** items, or **updated items whose embedded content changed**, a Celery indexing task is queued:
+   - products → `catalog.tasks.index_product_task` (only when `name`/`description` changed — see `Product.get_content`)
+   - documents → `catalog.tasks.index_document_task` (only when `content` changed — see `Document.split`)
+
+   Source sync does **not** re-enqueue an item when its embedded content is unchanged, so a routine re-sync that brings back identical data does not trigger a redundant re-split + embedding API call. Non-embedded catalog fields (price, sku, properties, categories) are still updated on the row without re-indexing. To regenerate embeddings for items that were never indexed (or failed), run a [backfill/reindex](#backfill--reindex).
 3. The task calls `ProductEmbeddingGenerator.index_object` / `DocumentEmbeddingGenerator.index_object` (`catalog/services.py`), which:
    - **re-splits** the item into chunks (`Product.split` / `Document.split` using LangChain's `TokenTextSplitter`, bounded by the data set's chunk size/overlap), deleting any previous chunks;
    - **embeds** each chunk with the data set's configured provider/model/dimensions;
@@ -92,7 +94,7 @@ Sync is triggered from the UI (**Configure → Integrations → Sync**) or the A
 
 Two ways to regenerate embeddings, depending on whether you want it on the worker or in the foreground:
 
-**Management command (foreground, no worker required).** Re-splits and re-embeds using each data set's current configuration. Ideal for an initial backfill or recovering after a model/dimension change:
+**Management command (foreground, no worker required).** Re-splits and re-embeds using each data set's current configuration. Ideal for an initial backfill or recovering after a model/dimension change. If an individual item fails to index (e.g. an embedding API error), the command logs the failing item and continues with the rest, then exits with a non-zero status and a failure summary so partial failures are never silent:
 
 ```bash
 # Reindex products AND documents in one data set
@@ -142,6 +144,8 @@ At query time the agent embeds the user's question with the **same** data set pr
 - `agent.core.repositories.DjangoDocumentChunkRepository.get_chunk_by_distance_for_data_set` — same, for documents.
 - The product retriever can additionally combine vector distance with PostgreSQL full-text ranking (`SearchRank` / `SearchVector`) via `get_chunk_by_distance_and_keyword_for_data_set`.
 
+**Chunks with `embedding IS NULL` are always skipped.** A cosine distance computed against `NULL` is `NULL`, so without this guard stale/partial chunks (e.g. an item whose embedding generation failed mid-way) could occupy result slots even though they carry no vector. All three chunk-query methods filter `embedding__isnull=False`, so failed-to-index content never surfaces in search results. Use `python manage.py reindex` to backfill any such chunks.
+
 The retrievers that wire this into agents live in `server/agent/core/retrievers/document_retriever.py` and the product retriever shipped with the product-search plugin (see [Concept: Product search Agent](/docs/customization/concept-product-search)).
 
 ## Troubleshooting
@@ -153,7 +157,7 @@ The pgvector extension is missing. Run migrations (`docker compose exec api pyth
 With the default OpenAI provider, sync and indexing tasks fail at embedding time if the key is empty or invalid. Set `OPENAI_API_KEY` in `server/.env` and restart the worker: `docker compose restart worker`.
 
 **Embedding dimension mismatch**
-Symptoms: errors mentioning vector length, or suddenly poor/empty results, after changing `embedding_model` or `embedding_vector_dimensions`. Stored vectors keep the old length until regenerated. Run a [reindex](#backfill--reindex) so every chunk matches the current configuration, and make sure the data set's `embedding_vector_dimensions` is one the provider allows.
+Symptoms: errors mentioning vector length, or suddenly poor/empty results, after changing `embedding_model` or `embedding_vector_dimensions`. The embedding dimension is fixed platform-wide at `EMBEDDING_VECTOR_DIMENSIONS` (512) and is immutable on an existing data set, so a mismatch means a data set was created/edited by bypassing the API (legacy data or a direct DB edit). Stored vectors keep the old length until regenerated. Recreate the data set with the matching `512` dimension (or realign the row + run a [reindex](#backfill--reindex)) so every chunk matches the fixed column. The `catalog.W001` system check surfaces such drifted rows on startup.
 
 **No indexed chunks (search returns nothing)**
 Products/documents exist but `ProductContentChunk` / `DocumentChunk` have no rows (or rows with `embedding IS NULL`). The sync imported data but indexing tasks didn't run or finish. Check the worker is running, then run `python manage.py reindex --data-set <id>` and verify with the SQL in the [QA checklist](#manual-qa-checklist).

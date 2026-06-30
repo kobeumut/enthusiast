@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from django.db import models
 from langchain_text_splitters import TokenTextSplitter
 
@@ -14,6 +17,11 @@ class Document(models.Model):
     url = models.CharField(max_length=255)
     title = models.CharField(max_length=1024)
     content = models.TextField()
+    # Canonical hash of the content fields that feed the chunker/embedder (see
+    # ``compute_content_hash``). Stored so the sync layer can detect no-op re-syncs
+    # and skip the expensive re-index. ``null=True`` keeps existing rows valid until
+    # the first sync backfills it.
+    content_hash = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         db_table_comment = (
@@ -23,6 +31,23 @@ class Document(models.Model):
         )
         constraints = [models.UniqueConstraint(fields=["data_set", "url"], name="uq_document")]
         indexes = [models.Index(fields=["data_set"], name="catalog_document_data_set_idx")]
+
+    #: Fields whose change should trigger a re-index (i.e. anything that affects the
+    #: generated chunks/embeddings). ``url`` is the identity/lookup field and is
+    #: intentionally excluded — it does not affect the generated embeddings.
+    CONTENT_HASH_FIELDS = ("title", "content")
+
+    @classmethod
+    def compute_content_hash(cls, *, title, content) -> str:
+        """Return a stable sha256 hex digest over the content fields that drive embeddings.
+
+        Hash scope (must stay in sync with ``CONTENT_HASH_FIELDS``):
+        ``title``, ``content``. Any of these changing means the chunked/embedded
+        representation changed, so a re-index is required. ``json.dumps(...,
+        sort_keys=True)`` gives a deterministic key order regardless of caller.
+        """
+        payload = json.dumps({"title": title, "content": content}, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def split(self, chunk_size, chunk_overlap):
         """

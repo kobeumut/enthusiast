@@ -14,17 +14,36 @@ class DataSetObjectEmbeddingsGenerator(Generic[T]):
         """Splits the document into chunks and generates embeddings for them using data set's configuration.
         Removes the old chunks and embeddings if present.
 
+        The embedding provider is resolved and instantiated once, outside the chunk
+        loop, and all chunk contents are embedded through a single batched request
+        (``generate_embeddings_batch``). This avoids one registry lookup, one provider
+        instance and one HTTP client per chunk, which dominates indexing cost/latency
+        on large catalogs.
+
         Args:
             obj (Document | Product): The object to (re-)index
         """
         data_set = obj.data_set
         obj.split(data_set.embedding_chunk_size, data_set.embedding_chunk_overlap)
-        for chunk in obj.chunks.all():
-            embedding_provider_class = EmbeddingProviderRegistry().provider_for_dataset(data_set.id)
-            embedding_provider = embedding_provider_class(
-                data_set.embedding_model, data_set.embedding_vector_dimensions
-            )
-            chunk.set_embedding(embedding_provider.generate_embeddings(chunk.content))
+
+        chunks = list(obj.chunks.all())
+        if not chunks:
+            return
+
+        embedding_provider_class = EmbeddingProviderRegistry().provider_for_dataset(data_set.id)
+        embedding_provider = embedding_provider_class(
+            data_set.embedding_model, data_set.embedding_vector_dimensions
+        )
+
+        contents = [chunk.content for chunk in chunks]
+        embeddings = embedding_provider.generate_embeddings_batch(contents)
+
+        # Fail fast if the provider returns a different number of embeddings than the
+        # number of chunks it was asked to embed. A silent ``zip`` truncation would
+        # otherwise leave some newly-split chunks without embeddings while still
+        # persisting the partial results, which is hard to detect at runtime.
+        for chunk, embedding in zip(chunks, embeddings, strict=True):
+            chunk.set_embedding(embedding)
             chunk.save()
 
 

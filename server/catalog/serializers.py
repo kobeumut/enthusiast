@@ -5,7 +5,15 @@ from agent.core.registries.embeddings.embedding_provider_registry import Embeddi
 from sync.document.registry import DocumentSourcePluginRegistry
 from sync.product.registry import ProductSourcePluginRegistry
 
-from .models import DataSet, Document, DocumentSource, ECommerceIntegration, Product, ProductSource
+from .models import (
+    EMBEDDING_VECTOR_DIMENSIONS,
+    DataSet,
+    Document,
+    DocumentSource,
+    ECommerceIntegration,
+    Product,
+    ProductSource,
+)
 from .utils import PydanticModelField
 
 
@@ -29,12 +37,47 @@ class DataSetCreateSerializer(DataSetSerializer):
         fields = DataSetSerializer.Meta.fields + ["preconfigure_agents"]
 
     def validate(self, data):
-        """Validate that embedding_vector_dimensions satisfies provider constraints."""
-        embedding_provider = data.get("embedding_provider")
-        embedding_model = data.get("embedding_model")
+        """Validate embedding configuration for a new data set.
+
+        Two layers of validation, in order:
+
+        1. The vector dimension must equal the platform-wide ``EMBEDDING_VECTOR_DIMENSIONS``.
+           Every data set stores its chunks in the same fixed pgvector column
+           (``vector(EMBEDDING_VECTOR_DIMENSIONS)``), so a non-matching dimension would crash
+           every chunk insert at runtime. This is an explicit product decision, not a tunable
+           setting.
+        2. The chosen embedding model must actually support that dimension, per the
+           provider's ``vector_size_constraints()``.
+        """
         embedding_vector_dimensions = data.get("embedding_vector_dimensions")
 
-        if embedding_provider and embedding_model and embedding_vector_dimensions is not None:
+        if (
+            embedding_vector_dimensions is not None
+            and embedding_vector_dimensions != EMBEDDING_VECTOR_DIMENSIONS
+        ):
+            raise serializers.ValidationError(
+                {
+                    "embedding_vector_dimensions": (
+                        f"Embedding vector dimensions must be {EMBEDDING_VECTOR_DIMENSIONS} \u2014 the "
+                        f"fixed dimension of the shared chunk-table column. Got {embedding_vector_dimensions}."
+                    )
+                }
+            )
+
+        embedding_provider = data.get("embedding_provider")
+        embedding_model = data.get("embedding_model")
+
+        # The effective dimension is ALWAYS the global constant: the field defaults to it on
+        # the model, and we just rejected any explicit non-matching value. When the caller
+        # omits the field we normalize it here and write it back into the validated data, so
+        # that the provider constraint check below always runs against the dimension that will
+        # actually be stored. Without this, sending only provider+model would skip the
+        # constraint check and let a provider/model that does not support 512 slip through.
+        if embedding_vector_dimensions is None:
+            embedding_vector_dimensions = EMBEDDING_VECTOR_DIMENSIONS
+            data["embedding_vector_dimensions"] = EMBEDDING_VECTOR_DIMENSIONS
+
+        if embedding_provider and embedding_model:
             try:
                 provider_class = EmbeddingProviderRegistry().provider_class_by_name(embedding_provider)
             except Exception:
@@ -54,6 +97,42 @@ class DataSetCreateSerializer(DataSetSerializer):
                     )
 
         return data
+
+
+class DataSetUpdateSerializer(DataSetSerializer):
+    """Serializer for partial updates of a ``DataSet``.
+
+    Embedding configuration (provider, model and vector dimensions) is immutable once a data
+    set exists: the chunk tables share a single fixed-dimension pgvector column, so changing
+    any of these would silently invalidate the embeddings already stored and mix old chunks
+    with new query vectors. An attempt to change them is rejected with a clear error pointing
+    at recreating the data set (or a reindex/migration) instead.
+    """
+
+    class Meta(DataSetSerializer.Meta):
+        read_only_fields = ("embedding_provider", "embedding_model", "embedding_vector_dimensions")
+
+    def validate(self, attrs):
+        instance = self.instance
+        if instance is not None:
+            for field in self.Meta.read_only_fields:
+                if field in self.initial_data:
+                    incoming = self.initial_data[field]
+                    current = getattr(instance, field)
+                    # Request data may arrive typed differently than the stored value
+                    # (e.g. a JSON number vs. an int), so compare on the string form.
+                    if str(incoming) != str(current):
+                        raise serializers.ValidationError(
+                            {
+                                field: (
+                                    "Embedding configuration is immutable after a data set is created, "
+                                    "because changing it would invalidate the chunk embeddings already "
+                                    "stored in the fixed pgvector column. Create a new data set (or "
+                                    "perform a reindex/migration) instead."
+                                )
+                            }
+                        )
+        return attrs
 
 
 class ProductSerializer(serializers.ModelSerializer):

@@ -16,10 +16,10 @@ While a single data set is usually enough to get started, there are scenarios wh
   - **Name:** The display name of the data set.
   - **Embedding Provider:** The plugin for generating content embeddings (default: OpenAI).
   - **Embedding Model:** The model used for embeddings (default: large).
-  - **Embedding Vector Size:** The size of the embeddings vector (default: 512).
+  - **Embedding Vector Size:** Fixed at `512`. The chunk embeddings are stored in a single shared `vector(512)` pgvector column, so the size cannot be changed per data set.
 3. Click "Create" at the bottom.
 
-The embedding provider/model/vector size you choose here drives how content is chunked and embedded into the [PostgreSQL pgvector store](/docs/management/vector-store). Changing them on an existing data set requires a [reindex](/docs/management/vector-store#backfill--reindex).
+The embedding **provider** and **model** you choose here drive how content is chunked and embedded into the [PostgreSQL pgvector store](/docs/management/vector-store). Once a data set exists, its embedding provider, model and vector size are **immutable**: changing any of them would invalidate the embeddings already stored in the fixed column. To use a different configuration, create a new data set (or [reindex](/docs/management/vector-store#backfill--reindex)/migrate the existing one).
 
 Now, you're ready to connect your [data sources](/docs/synchronize/connect-product-source).
 

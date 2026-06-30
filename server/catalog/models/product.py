@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from django.db import models
 from langchain_text_splitters import TokenTextSplitter
 
@@ -19,11 +22,45 @@ class Product(models.Model):
     properties = models.CharField(max_length=65535, blank=True)
     categories = models.CharField(max_length=65535, blank=True)
     price = models.FloatField()
+    # Canonical hash of the content fields that feed the chunker/embedder (see
+    # ``compute_content_hash``). Stored so the sync layer can detect no-op re-syncs
+    # and skip the expensive re-index. ``null=True`` keeps existing rows valid until
+    # the first sync backfills it.
+    content_hash = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         db_table_comment = "List of products from a given data set."
         constraints = [models.UniqueConstraint(fields=["data_set", "entry_id"], name="uq_product")]
         indexes = [models.Index(fields=["data_set"], name="catalog_product_data_set_idx")]
+
+    #: Fields whose change should trigger a re-index (i.e. anything that affects the
+    #: generated chunks/embeddings). ``entry_id``/``slug`` are identity/lookup fields
+    #: and are intentionally excluded — changing them does not alter embeddings.
+    CONTENT_HASH_FIELDS = ("name", "description", "sku", "properties", "categories", "price")
+
+    @classmethod
+    def compute_content_hash(cls, *, name, description, sku, properties, categories, price) -> str:
+        """Return a stable sha256 hex digest over the content fields that drive embeddings.
+
+        Hash scope (must stay in sync with ``CONTENT_HASH_FIELDS``):
+        ``name``, ``description``, ``sku``, ``properties``, ``categories``, ``price``.
+        Any of these changing means the chunked/embedded representation changed, so a
+        re-index is required. ``json.dumps(..., sort_keys=True)`` gives a deterministic
+        key order regardless of caller, and ``ensure_ascii=False`` keeps unicode stable.
+        """
+        payload = json.dumps(
+            {
+                "name": name,
+                "description": description,
+                "sku": sku,
+                "properties": properties,
+                "categories": categories,
+                "price": price,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def get_content(self):
         return f"{self.name} {self.description}"

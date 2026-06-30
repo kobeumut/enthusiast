@@ -26,6 +26,28 @@ class EmbeddingProvider(ABC):
         """
         pass
 
+    def generate_embeddings_batch(self, contents: list[str]) -> list[list[float]]:
+        """Generates embedding vectors for a batch of contents and returns them.
+
+        The default implementation simply calls :meth:`generate_embeddings` once per
+        item, so providers that have no native batch API keep working unchanged and
+        existing single-string call-sites are fully backwards compatible.
+
+        Providers that expose a batch endpoint (e.g. OpenAI) should override this to
+        issue a single request for the whole list. Doing so collapses one registry
+        lookup, one provider instance and one HTTP client/round-trip per chunk into a
+        single batched call, which is the dominant cost/latency saving when indexing
+        large catalogs.
+
+        Args:
+            contents (list[str]): The input texts to embed, in order.
+
+        Returns:
+            list[list[float]]: Embedding vectors aligned with the input order; the
+            element at position ``i`` is the embedding of ``contents[i]``.
+        """
+        return [self.generate_embeddings(content) for content in contents]
+
     @staticmethod
     @abstractmethod
     def available_models() -> list[str]:
