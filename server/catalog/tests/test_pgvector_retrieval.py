@@ -158,3 +158,91 @@ class TestNullEmbeddingsAreExcludedFromRetrieval:
         )
 
         assert [chunk.id for chunk in results] == [embedded_chunk.id]
+
+
+class TestDistanceThresholdFiltersIrrelevantChunks:
+    """The pure-vector path drops chunks whose cosine distance exceeds ``distance_threshold``.
+
+    Without a similarity floor the ranking always returns ``top max_objects``, so irrelevant chunks
+    leak into results (YAZ-9 / DRA). ``distance_threshold`` is an optional upper bound on cosine
+    distance, pushed into the queryset as ``distance__lte`` so it composes with ``ef_search`` and the
+    candidate-pool slice. ``None`` keeps the historical "always return top-K" behaviour.
+    """
+
+    def test_document_vector_retrieval_drops_far_chunks_when_threshold_set(self, data_set):
+        document_near = baker.make(Document, data_set=data_set, url="https://example.com/near", title="N", content="N")
+        document_far = baker.make(Document, data_set=data_set, url="https://example.com/far", title="F", content="F")
+        near = DocumentChunk.objects.create(
+            document=document_near, content="fiber optic broadband", embedding=_unit_vector(0)
+        )
+        # Orthogonal embedding -> cosine distance 1.0 from the query (clearly irrelevant).
+        DocumentChunk.objects.create(document=document_far, content="unrelated filler", embedding=_unit_vector(1))
+
+        repository = DjangoDocumentChunkRepository(DocumentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id,
+                distance=CosineDistance("embedding", _unit_vector(0)),
+                distance_threshold=0.6,
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [near.id]
+
+    def test_product_vector_retrieval_drops_far_chunks_when_threshold_set(self, data_set):
+        product_near = baker.make(Product, data_set=data_set, entry_id="near", name="Near", slug="near", price=1)
+        product_far = baker.make(Product, data_set=data_set, entry_id="far", name="Far", slug="far", price=1)
+        near = ProductContentChunk.objects.create(
+            product=product_near, content="red running shoes", embedding=_unit_vector(0)
+        )
+        ProductContentChunk.objects.create(product=product_far, content="blue cotton shirts", embedding=_unit_vector(1))
+
+        repository = DjangoProductChunkRepository(ProductContentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id,
+                distance=CosineDistance("embedding", _unit_vector(0)),
+                distance_threshold=0.6,
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [near.id]
+
+    def test_threshold_none_keeps_historical_top_k_behaviour(self, data_set):
+        product_near = baker.make(Product, data_set=data_set, entry_id="near", name="Near", slug="near", price=1)
+        product_far = baker.make(Product, data_set=data_set, entry_id="far", name="Far", slug="far", price=1)
+        near = ProductContentChunk.objects.create(
+            product=product_near, content="red running shoes", embedding=_unit_vector(0)
+        )
+        far = ProductContentChunk.objects.create(product=product_far, content="blue cotton shirts", embedding=_unit_vector(1))
+
+        repository = DjangoProductChunkRepository(ProductContentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id,
+                distance=CosineDistance("embedding", _unit_vector(0)),
+                distance_threshold=None,
+            )
+        )
+
+        # No similarity floor -> the orthogonal far chunk is still returned (historical behaviour).
+        assert [chunk.id for chunk in results] == [near.id, far.id]
+
+    def test_high_threshold_keeps_everything_below_it(self, data_set):
+        product_near = baker.make(Product, data_set=data_set, entry_id="near", name="Near", slug="near", price=1)
+        product_far = baker.make(Product, data_set=data_set, entry_id="far", name="Far", slug="far", price=1)
+        near = ProductContentChunk.objects.create(
+            product=product_near, content="red running shoes", embedding=_unit_vector(0)
+        )
+        far = ProductContentChunk.objects.create(product=product_far, content="blue cotton shirts", embedding=_unit_vector(1))
+
+        repository = DjangoProductChunkRepository(ProductContentChunk)
+        results = list(
+            repository.get_chunk_by_distance_for_data_set(
+                data_set_id=data_set.id,
+                distance=CosineDistance("embedding", _unit_vector(0)),
+                distance_threshold=1.5,
+            )
+        )
+
+        assert [chunk.id for chunk in results] == [near.id, far.id]

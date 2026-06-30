@@ -49,12 +49,15 @@ class BaseModelChunkRepository(BaseRepository[T], ABC):
         distance: CosineDistance,
         filters: Any = None,
         ef_search: Optional[int] = None,
+        distance_threshold: Optional[float] = None,
     ) -> Any:
         """Return chunks for ``data_set_id`` ranked by cosine ``distance`` nearest-first.
 
-        Implementations may accept a ``filters`` value (pre-retrieval metadata predicates) and an
-        ``ef_search`` value (runtime HNSW ``hnsw.ef_search`` tuning); both are optional and default
-        to the historical behaviour (no predicate, server-default candidate list).
+        Implementations may accept a ``filters`` value (pre-retrieval metadata predicates), an
+        ``ef_search`` value (runtime HNSW ``hnsw.ef_search`` tuning), and a ``distance_threshold``
+        value (cosine-distance similarity floor that drops chunks too dissimilar to the query);
+        all three are optional and default to the historical behaviour (no predicate, server-default
+        candidate list, always return top-K).
         """
         pass
 

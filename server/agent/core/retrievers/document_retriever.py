@@ -32,6 +32,9 @@ class DocumentRetriever(BaseVectorStoreRetriever):
     * **MMR diversity** – ``mmr_enabled`` selects relevant-yet-diverse chunks so a single document's
       near-duplicate sections do not crowd out other sections the user needs.
     * **HNSW tuning** – ``ef_search`` runs ``SET LOCAL hnsw.ef_search = N`` for the vector query.
+    * **Similarity floor** – ``distance_threshold`` drops chunks whose cosine distance to the query
+      exceeds the configured bound, so the ranklist never surfaces irrelevant chunks just to fill
+      ``max_objects``.
     """
 
     def __init__(
@@ -48,6 +51,7 @@ class DocumentRetriever(BaseVectorStoreRetriever):
         mmr_enabled: bool = False,
         mmr_lambda: float = DEFAULT_MMR_LAMBDA,
         ef_search: Optional[int] = None,
+        distance_threshold: Optional[float] = None,
     ):
         self.data_set_id = data_set_id
         self.data_set_repo = data_set_repo
@@ -61,6 +65,7 @@ class DocumentRetriever(BaseVectorStoreRetriever):
         self.mmr_enabled = mmr_enabled
         self.mmr_lambda = mmr_lambda
         self.ef_search = ef_search
+        self.distance_threshold = distance_threshold
 
     def find_content_matching_query(self, query: str, filters: Optional[RetrievalFilters] = None) -> list:
         """Find document chunks matching a natural-language query using pgvector cosine ranking.
@@ -100,7 +105,11 @@ class DocumentRetriever(BaseVectorStoreRetriever):
 
     def _vector_chunks(self, distance, filters: Optional[RetrievalFilters], pool: Optional[int]) -> list:
         chunks = self.model_chunk_repo.get_chunk_by_distance_for_data_set(
-            self.data_set_id, distance, filters=filters, ef_search=self.ef_search
+            self.data_set_id,
+            distance,
+            filters=filters,
+            ef_search=self.ef_search,
+            distance_threshold=self.distance_threshold,
         )
         if pool is not None:
             return list(chunks[:pool])
