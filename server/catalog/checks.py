@@ -15,6 +15,11 @@ def check_data_set_embedding_dimensions(app_configs, **kwargs):
     column and must be recreated with the matching dimension. This check surfaces that
     misconfiguration.
 
+    This check is a defensive backstop. The primary guard is the catalog serializer, which
+    rejects non-matching dimensions at create time and makes embedding configuration immutable
+    after creation; this check only surfaces rows that bypass the API (legacy data or direct
+    DB edits).
+
     It is defensive about database availability: it is skipped entirely when the ``catalog_dataset``
     table is absent (e.g. during ``makemigrations`` on a fresh project) or when the database is
     unreachable, so it never breaks management commands.

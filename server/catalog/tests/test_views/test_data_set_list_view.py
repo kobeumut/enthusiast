@@ -85,14 +85,14 @@ class TestDataSetListViewPost:
         self, mock_provider_class_by_name, admin_api_client, url
     ):
         mock_provider = MagicMock()
-        mock_provider.vector_size_constraints.return_value = {"constrained-embed": [1024]}
+        mock_provider.vector_size_constraints.return_value = {"constrained-embed": [512]}
         mock_provider_class_by_name.return_value = mock_provider
 
         payload = {
             "name": "Constrained DataSet",
             "embedding_provider": "MockProvider",
             "embedding_model": "constrained-embed",
-            "embedding_vector_dimensions": 1024,
+            "embedding_vector_dimensions": 512,
         }
         response = admin_api_client.post(url, payload, format="json")
 
@@ -117,3 +117,49 @@ class TestDataSetListViewPost:
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert not DataSet.objects.filter(name="Constrained DataSet").exists()
+
+    @pytest.mark.parametrize("dimensions", [256, 1024, 1536, 3072])
+    def test_dataset_creation_rejects_non_global_vector_dimensions(self, admin_api_client, url, dimensions):
+        payload = {
+            "name": "Bad Dimensions DataSet",
+            "embedding_provider": "OpenAI",
+            "embedding_model": "text-embedding-3-large",
+            "embedding_vector_dimensions": dimensions,
+        }
+        response = admin_api_client.post(url, payload, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "embedding_vector_dimensions" in response.json()
+        assert not DataSet.objects.filter(name="Bad Dimensions DataSet").exists()
+
+    def test_dataset_creation_defaults_to_global_vector_dimensions(self, admin_api_client, url):
+        # Omitting embedding_vector_dimensions must fall back to the global constant (512).
+        payload = {"name": "Default Dimensions DataSet"}
+        response = admin_api_client.post(url, payload, format="json")
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data_set = DataSet.objects.get(name="Default Dimensions DataSet")
+        assert data_set.embedding_vector_dimensions == 512
+
+    @patch.object(EmbeddingProviderRegistry, "provider_class_by_name")
+    def test_dataset_creation_evaluates_provider_constraints_against_default_dimension(
+        self, mock_provider_class_by_name, admin_api_client, url
+    ):
+        # When embedding_vector_dimensions is omitted it defaults to the global 512, and the
+        # provider constraint check must still run against that effective dimension. A
+        # provider/model that does NOT support 512 must be rejected even when the caller did
+        # not send a dimension.
+        mock_provider = MagicMock()
+        mock_provider.vector_size_constraints.return_value = {"constrained-embed": [1024]}
+        mock_provider_class_by_name.return_value = mock_provider
+
+        payload = {
+            "name": "Constrained Default DataSet",
+            "embedding_provider": "MockProvider",
+            "embedding_model": "constrained-embed",
+        }
+        response = admin_api_client.post(url, payload, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "embedding_vector_dimensions" in response.json()
+        assert not DataSet.objects.filter(name="Constrained Default DataSet").exists()

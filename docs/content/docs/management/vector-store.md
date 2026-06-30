@@ -71,7 +71,7 @@ Embeddings are configured **per data set** on the `DataSet` model (`server/catal
 
 Set these when creating a data set in the UI (**Manage → Data Sets → New**) or via the API. The available providers are configured by `CATALOG_EMBEDDING_PROVIDERS` in `pecl/settings.py` (ships with the OpenAI provider). Generating embeddings with OpenAI requires `OPENAI_API_KEY` in `server/.env`.
 
-> If you change `embedding_model` or `embedding_vector_dimensions` on an existing data set, [reindex](#backfill--reindex) so stored vectors match the new configuration.
+> **The vector dimension is fixed platform-wide at `EMBEDDING_VECTOR_DIMENSIONS` (512).** Every data set stores its chunk embeddings in the same shared `vector(512)` pgvector column (pgvector ANN indexes require a single fixed dimension), so `embedding_vector_dimensions` is **not** a per-data-set setting: it is forced to `512` at creation time, the embedding provider/model/dimensions are **immutable** on an existing data set, and a non-`512` value is rejected by the API with a clear error. To use a different dimension you must change `EMBEDDING_VECTOR_DIMENSIONS` in code **and** run a data migration that recreates both chunk embedding columns at the new dimension, then reindex. The `catalog.W001` system check is a defensive backstop that warns about any data set row that drifts from the fixed dimension (e.g. legacy data or direct DB edits).
 
 ## How content gets indexed
 
@@ -139,7 +139,7 @@ The pgvector extension is missing. Run migrations (`docker compose exec api pyth
 With the default OpenAI provider, sync and indexing tasks fail at embedding time if the key is empty or invalid. Set `OPENAI_API_KEY` in `server/.env` and restart the worker: `docker compose restart worker`.
 
 **Embedding dimension mismatch**
-Symptoms: errors mentioning vector length, or suddenly poor/empty results, after changing `embedding_model` or `embedding_vector_dimensions`. Stored vectors keep the old length until regenerated. Run a [reindex](#backfill--reindex) so every chunk matches the current configuration, and make sure the data set's `embedding_vector_dimensions` is one the provider allows.
+Symptoms: errors mentioning vector length, or suddenly poor/empty results, after changing `embedding_model` or `embedding_vector_dimensions`. The embedding dimension is fixed platform-wide at `EMBEDDING_VECTOR_DIMENSIONS` (512) and is immutable on an existing data set, so a mismatch means a data set was created/edited by bypassing the API (legacy data or a direct DB edit). Stored vectors keep the old length until regenerated. Recreate the data set with the matching `512` dimension (or realign the row + run a [reindex](#backfill--reindex)) so every chunk matches the fixed column. The `catalog.W001` system check surfaces such drifted rows on startup.
 
 **No indexed chunks (search returns nothing)**
 Products/documents exist but `ProductContentChunk` / `DocumentChunk` have no rows (or rows with `embedding IS NULL`). The sync imported data but indexing tasks didn't run or finish. Check the worker is running, then run `python manage.py reindex --data-set <id>` and verify with the SQL in the [QA checklist](#manual-qa-checklist).
