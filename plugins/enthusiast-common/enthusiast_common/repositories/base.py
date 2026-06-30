@@ -43,7 +43,19 @@ class BaseUserRepository(BaseRepository[T], ABC, Generic[T, U]):
 
 
 class BaseModelChunkRepository(BaseRepository[T], ABC):
-    def get_chunk_by_distance_for_data_set(self, data_set_id: Any, distance: CosineDistance) -> Optional[T]:
+    def get_chunk_by_distance_for_data_set(
+        self,
+        data_set_id: Any,
+        distance: CosineDistance,
+        filters: Any = None,
+        ef_search: Optional[int] = None,
+    ) -> Any:
+        """Return chunks for ``data_set_id`` ranked by cosine ``distance`` nearest-first.
+
+        Implementations may accept a ``filters`` value (pre-retrieval metadata predicates) and an
+        ``ef_search`` value (runtime HNSW ``hnsw.ef_search`` tuning); both are optional and default
+        to the historical behaviour (no predicate, server-default candidate list).
+        """
         pass
 
 
