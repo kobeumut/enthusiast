@@ -148,6 +148,67 @@ At query time the agent embeds the user's question with the **same** data set pr
 
 The retrievers that wire this into agents live in `server/agent/core/retrievers/document_retriever.py` and the product retriever shipped with the product-search plugin (see [Concept: Product search Agent](/docs/customization/concept-product-search)).
 
+## Production migration runbook: vector(512) + HNSW indexes
+
+`catalog.0014_pgvector_ann_indexes` and `catalog.0016_hnsw_indexes_concurrent` turn the two chunk embedding columns into a fixed `vector(EMBEDDING_VECTOR_DIMENSIONS)` (512) and build the cosine HNSW ANN indexes. On a **fresh** database `migrate` applies both with no extra steps. On an **existing** database that already stores embeddings, two production risks are handled explicitly:
+
+1. **`0014` rewrites each chunk `embedding` column to `vector(512)`** (`ALTER COLUMN ... TYPE vector(512)`). pgvector rejects that ALTER with `expected 512 dimensions, not N` if any stored row already carries a different dimension, so the offending chunks must be re-embedded or removed first.
+2. **`0016` builds the HNSW indexes with `CREATE INDEX CONCURRENTLY`** (split into its own `atomic = False` migration because `CONCURRENTLY` cannot run inside a transaction). Concurrent builds take no table-level `ACCESS EXCLUSIVE` lock, so they are safe on the large chunk tables while read/write traffic continues.
+
+Apply the migration to an existing installation in this order.
+
+**Step 1 — Preflight (detect non-512 data before the ALTER).** Run the preflight command against the target database. It reports stored chunk vectors and data sets whose dimension differs from 512, and exits non-zero on blocking findings so it can gate a deploy/CI step:
+
+```bash
+docker compose exec api python manage.py preflight_embedding_dimensions
+# add --strict to also fail on non-blocking (mismatched data set config) warnings
+```
+
+- **`BLOCKING ... stored vector(s) with dimension != 512`** → the `0014` ALTER will fail. Re-embed the affected chunks (Step 2), then re-run the preflight until it is clean.
+- **`DataSet: ... embedding_vector_dimensions != 512` (warning)** → a data set was created by bypassing the API (legacy data or a direct DB edit). Its chunks cannot be stored in the fixed `vector(512)` column. Recreate the data set with the matching `512` dimension and re-sync/reindex it; with `--strict` the preflight treats this as a failure.
+- **`Preflight OK`** → safe to proceed to Step 3.
+
+**Step 2 — Dimension validation / re-embed (only if Step 1 reported blocking rows).** Until `0014` runs the column is the legacy unbounded `vector`, so offending chunks still hold their original (non-512) vectors. Regenerate them at the platform dimension so the ALTER succeeds. The simplest path is a reindex, which re-splits and re-embeds using each data set's current configuration:
+
+```bash
+docker compose exec api python manage.py reindex                  # everything
+docker compose exec api python manage.py reindex --data-set <id>   # one data set
+```
+
+For bulk cleanup of stray rows you can also drop the offending chunks directly — they are regenerated on the next sync/reindex:
+
+```sql
+DELETE FROM catalog_documentchunk        WHERE embedding IS NOT NULL AND vector_dims(embedding) <> 512;
+DELETE FROM catalog_productcontentchunk  WHERE embedding IS NOT NULL AND vector_dims(embedding) <> 512;
+```
+
+Re-run Step 1 to confirm `Preflight OK` before continuing.
+
+**Step 3 — Apply the migration (dimension ALTER + concurrent index build).** With the preflight clean, run the migration. `0014` applies the dimension ALTER and the data_set filter indexes; `0016` then builds the two HNSW indexes concurrently:
+
+```bash
+docker compose exec api python manage.py migrate catalog
+```
+
+Because `0016` uses `CREATE INDEX CONCURRENTLY`, expect it to take longer than a normal migration on large tables (it makes two passes over the data) — this is expected and does **not** lock the tables. If `0016` fails with `relation "..." already exists`, a database that applied an earlier revision of these migrations (when the HNSW indexes were created inside `0014`) already has them — drop the existing indexes and re-run `migrate`. The same recovery applies if `0016` is interrupted mid-build:
+
+```sql
+DROP INDEX IF EXISTS document_chunk_embedding_idx;
+DROP INDEX IF EXISTS product_chunk_embedding_idx;
+```
+
+**Verify.** After the migration, confirm the columns are `vector(512)` and the HNSW indexes exist:
+
+```sql
+SELECT format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+WHERE c.relname = 'catalog_documentchunk' AND a.attname = 'embedding';   -- expect: vector(512)
+
+SELECT indexname, indexdef FROM pg_indexes
+WHERE indexname IN ('document_chunk_embedding_idx', 'product_chunk_embedding_idx');
+-- expect: ... USING hnsw (embedding vector_cosine_ops)
+```
+
 ## Troubleshooting
 
 **`vector` extension / `type "vector" does not exist`**
