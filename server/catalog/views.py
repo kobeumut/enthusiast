@@ -32,6 +32,7 @@ from .models import DataSet, DocumentSource, ECommerceIntegration, ProductSource
 from .serializers import (
     DataSetCreateSerializer,
     DataSetSerializer,
+    DataSetUpdateSerializer,
     DocumentSerializer,
     DocumentSourceSerializer,
     ECommerceIntegrationSerializer,
@@ -106,8 +107,8 @@ class DataSetDetailView(RetrieveAPIView):
         return super().get(request, *args, **kwargs)
 
     @swagger_auto_schema(
-        operation_description="Update a data set (embedding fields are ignored)",
-        request_body=DataSetSerializer,
+        operation_description="Update a data set. Embedding configuration is immutable after creation.",
+        request_body=DataSetUpdateSerializer,
         manual_parameters=[
             openapi.Parameter(
                 "data_set_id", openapi.IN_PATH, description="ID of the data set", type=openapi.TYPE_INTEGER
@@ -117,14 +118,8 @@ class DataSetDetailView(RetrieveAPIView):
     def patch(self, request, *args, **kwargs):
         instance = self.get_object()
 
-        # Filter out embedding fields from the request data
-        filtered_data = {
-            k: v
-            for k, v in request.data.items()
-            if k not in ["embedding_provider", "embedding_model", "embedding_vector_dimensions"]
-        }
-
-        serializer = self.get_serializer(instance, data=filtered_data, partial=True)
+        # Embedding configuration is validated (and rejected on change) by DataSetUpdateSerializer.
+        serializer = DataSetUpdateSerializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
 

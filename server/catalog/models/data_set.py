@@ -22,6 +22,14 @@ class DataSet(models.Model):
     language_model = models.CharField(default="gpt-4o")
     embedding_provider = models.CharField(max_length=255, default="OpenAI")
     embedding_model = models.CharField(max_length=255, default="text-embedding-3-large")
+    # NOTE: this value MUST equal ``EMBEDDING_VECTOR_DIMENSIONS`` (see the module docstring
+    # above). The chunk-table embedding column is a single fixed
+    # ``vector(EMBEDDING_VECTOR_DIMENSIONS)`` pgvector column, so a data set configured with a
+    # different dimension cannot store its chunks. The create serializer rejects any value
+    # other than ``EMBEDDING_VECTOR_DIMENSIONS`` and embedding configuration is immutable
+    # after creation; ``catalog.W001`` is a defensive backstop for rows that bypass the API
+    # (legacy data, direct DB edits). Changing the global dimension itself requires a data
+    # migration that recreates both chunk embedding columns and re-indexes them.
     embedding_vector_dimensions = models.IntegerField(default=EMBEDDING_VECTOR_DIMENSIONS)
     embedding_chunk_size = models.IntegerField(default=3000)
     embedding_chunk_overlap = models.IntegerField(default=150)
