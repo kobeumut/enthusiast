@@ -1,7 +1,7 @@
 from typing import Any, Optional, Type, TypeVar
 
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
-from django.db import models
+from django.db import connection, models, transaction
 from django.db.models import QuerySet
 from enthusiast_common.repositories import (
     BaseAgentRepository,
@@ -17,6 +17,7 @@ from enthusiast_common.structures import LLMFile
 from pgvector.django import CosineDistance
 
 from account.models import User
+from agent.core.retrievers.filters import RetrievalFilters, document_filter_q, product_filter_q
 from agent.models import Conversation, Message
 from agent.models.agent import Agent
 from agent.models.conversation import ConversationFile
@@ -70,40 +71,130 @@ class DjangoUserRepository(
 
 
 class DjangoDocumentChunkRepository(BaseDjangoRepository[DocumentChunk], BaseModelChunkRepository[DocumentChunk]):
-    def get_chunk_by_distance_for_data_set(self, data_set_id: int, distance: CosineDistance) -> QuerySet[DocumentChunk]:
-        embeddings_by_distance = self.model.objects.annotate(distance=distance).order_by("distance")
-        embeddings_with_documents = embeddings_by_distance.select_related("document").filter(
-            document__data_set_id__exact=data_set_id, embedding__isnull=False
+    def get_chunk_by_distance_for_data_set(
+        self,
+        data_set_id: int,
+        distance: CosineDistance,
+        filters: Optional[RetrievalFilters] = None,
+        ef_search: Optional[int] = None,
+    ) -> QuerySet[DocumentChunk] | list[DocumentChunk]:
+        """Return this dataset's document chunks ranked by cosine distance to ``distance``.
+
+        Args:
+            data_set_id: Restrict chunks to documents in this dataset.
+            distance: A ``CosineDistance`` annotation ordering the chunks nearest-first.
+            filters: Optional pre-retrieval metadata predicates pushed into the queryset as ``Q``
+                filters before the vector ranking (see ``agent.core.retrievers.filters``).
+            ef_search: When set, runs ``SET LOCAL hnsw.ef_search = N`` inside a transaction before
+                evaluating the query, tuning the HNSW candidate-list size at runtime. Because ``SET
+                LOCAL`` is transaction-scoped and the queryset is lazy, the result is materialised to
+                a list within that transaction. ``None`` keeps the server default and returns a lazy
+                queryset (the historical behaviour).
+        """
+        queryset = (
+            self.model.objects.annotate(distance=distance)
+            .select_related("document")
+            .filter(document__data_set_id__exact=data_set_id, embedding__isnull=False)
+            .order_by("distance")
         )
-        return embeddings_with_documents
+        document_filter = document_filter_q(filters)
+        if document_filter is not None:
+            queryset = queryset.filter(document_filter)
+        if ef_search is None:
+            return queryset
+        return _materialise_with_hnsw_ef_search(queryset, ef_search)
+
+    def get_chunks_by_keyword_for_data_set(
+        self,
+        data_set_id: int,
+        keyword: str,
+        distance: CosineDistance,
+        filters: Optional[RetrievalFilters] = None,
+    ) -> QuerySet[DocumentChunk]:
+        """Return this dataset's document chunks matching ``keyword`` via PostgreSQL full-text search.
+
+        Chunks are annotated with a full-text ``rank`` (``SearchRank`` over a ``SearchVector`` of the
+        chunk content) and ordered by rank descending, then by cosine distance as a deterministic
+        tie-break. Only chunks whose content actually matches the query (``SearchVector @@
+        SearchQuery``) are kept, so ``ts_rank``'s near-zero noise on non-matching rows does not leak
+        into the ranklist. This is the keyword ranklist the document retriever fuses with the vector
+        ranklist for hybrid (RRF) retrieval.
+        """
+        query = SearchQuery(keyword)
+        vector = SearchVector("content")
+        queryset = (
+            self.model.objects.annotate(search=vector, rank=SearchRank(vector, query), distance=distance)
+            .select_related("document")
+            .filter(document__data_set_id__exact=data_set_id, embedding__isnull=False, search=query)
+            .order_by("-rank", "distance")
+        )
+        document_filter = document_filter_q(filters)
+        if document_filter is not None:
+            queryset = queryset.filter(document_filter)
+        return queryset
 
 
 class DjangoProductChunkRepository(
     BaseDjangoRepository[ProductContentChunk], BaseModelChunkRepository[ProductContentChunk]
 ):
     def get_chunk_by_distance_for_data_set(
-        self, data_set_id: int, distance: CosineDistance
-    ) -> QuerySet[ProductContentChunk]:
-        embeddings_by_distance = self.model.objects.annotate(distance=distance).order_by("distance")
-        embeddings_with_products = embeddings_by_distance.select_related("product").filter(
-            product__data_set_id__exact=data_set_id, embedding__isnull=False
-        )
-        return embeddings_with_products
+        self,
+        data_set_id: int,
+        distance: CosineDistance,
+        filters: Optional[RetrievalFilters] = None,
+        ef_search: Optional[int] = None,
+    ) -> QuerySet[ProductContentChunk] | list[ProductContentChunk]:
+        """Return this dataset's product chunks ranked by cosine distance to ``distance``.
 
-    def get_chunk_by_distance_and_keyword_for_data_set(
-        self, data_set_id: int, distance: CosineDistance, keyword: str
-    ) -> QuerySet[ProductContentChunk]:
-        embeddings_by_distance_and_keyword = (
-            self.model.objects.annotate(
-                rank=SearchRank(SearchVector("content"), SearchQuery(keyword)), distance=distance
-            )
-            .filter(rank__gt=0.05)
+        Args:
+            data_set_id: Restrict chunks to products in this dataset.
+            distance: A ``CosineDistance`` annotation ordering the chunks nearest-first.
+            filters: Optional pre-retrieval metadata predicates (category / price range) pushed into
+                the queryset as ``Q`` filters before the vector ranking.
+            ef_search: When set, runs ``SET LOCAL hnsw.ef_search = N`` inside a transaction before
+                evaluating the query (runtime HNSW tuning). See
+                ``DjangoDocumentChunkRepository.get_chunk_by_distance_for_data_set``.
+        """
+        queryset = (
+            self.model.objects.annotate(distance=distance)
+            .select_related("product")
+            .filter(product__data_set_id__exact=data_set_id, embedding__isnull=False)
             .order_by("distance")
         )
-        embeddings_with_products = embeddings_by_distance_and_keyword.select_related("product").filter(
-            product__data_set_id__exact=data_set_id, embedding__isnull=False
+        product_filter = product_filter_q(filters)
+        if product_filter is not None:
+            queryset = queryset.filter(product_filter)
+        if ef_search is None:
+            return queryset
+        return _materialise_with_hnsw_ef_search(queryset, ef_search)
+
+    def get_chunks_by_keyword_for_data_set(
+        self,
+        data_set_id: int,
+        keyword: str,
+        distance: CosineDistance,
+        filters: Optional[RetrievalFilters] = None,
+    ) -> QuerySet[ProductContentChunk]:
+        """Return this dataset's product chunks matching ``keyword`` via PostgreSQL full-text search.
+
+        Chunks are annotated with a full-text ``rank`` and ordered by rank descending, then cosine
+        distance. Only chunks whose content actually matches the query (``SearchVector @@
+        SearchQuery``) are kept, so ``ts_rank``'s near-zero noise on non-matching rows does not leak
+        into the ranklist. This is the keyword ranklist the product retriever fuses with the vector
+        ranklist for hybrid (RRF) retrieval.
+        """
+        query = SearchQuery(keyword)
+        vector = SearchVector("content")
+        queryset = (
+            self.model.objects.annotate(search=vector, rank=SearchRank(vector, query), distance=distance)
+            .select_related("product")
+            .filter(product__data_set_id__exact=data_set_id, embedding__isnull=False, search=query)
+            .order_by("-rank", "distance")
         )
-        return embeddings_with_products
+        product_filter = product_filter_q(filters)
+        if product_filter is not None:
+            queryset = queryset.filter(product_filter)
+        return queryset
 
 
 class DjangoProductRepository(BaseDjangoRepository[Product], BaseProductRepository[Product]):
@@ -141,3 +232,22 @@ class DjangoDataSetRepository(BaseDjangoRepository[DataSet], BaseDataSetReposito
 class DjangoAgentRepository(BaseDjangoRepository[Agent], BaseAgentRepository[Agent]):
     def get_agent_configuration_by_id(self, agent_id: int) -> Any:
         return self.get_by_id(agent_id).config
+
+
+def _materialise_with_hnsw_ef_search(queryset: QuerySet, ef_search: int) -> list:
+    """Evaluate ``queryset`` with ``hnsw.ef_search`` set to ``ef_search`` for this transaction.
+
+    ``hnsw.ef_search`` (default 40) is the size of the HNSW dynamic candidate list at query time: a
+    larger value trades recall for latency. It is a *runtime* GUC, so unlike the build-time ``m`` /
+    ``ef_construction`` parameters it can be tuned per-query without rebuilding the index.
+
+    ``SET LOCAL`` scopes the change to the current transaction. Django evaluates ORM querysets
+    lazily, so the queryset must be materialised *inside* the ``atomic`` block – otherwise the SET
+    LOCAL would be reset (on commit) before the SQL runs. The function therefore returns a list, not
+    a queryset. ``SET LOCAL`` takes effect immediately on the same connection within the same
+    transaction.
+    """
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL hnsw.ef_search = %s", [int(ef_search)])
+        return list(queryset)

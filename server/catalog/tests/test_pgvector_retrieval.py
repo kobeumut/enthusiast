@@ -150,8 +150,10 @@ class TestNullEmbeddingsAreExcludedFromRetrieval:
 
         repository = DjangoProductChunkRepository(ProductContentChunk)
         results = list(
-            repository.get_chunk_by_distance_and_keyword_for_data_set(
-                data_set_id=data_set.id, distance=CosineDistance("embedding", _unit_vector(0)), keyword="shoes"
+            repository.get_chunks_by_keyword_for_data_set(
+                data_set_id=data_set.id,
+                distance=CosineDistance("embedding", _unit_vector(0)),
+                keyword="shoes",
             )
         )
 
